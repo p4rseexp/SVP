@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-## Build 20220303-001-Alpha
+## Build 20220303-002-Alpha
 
 ## 导入通用变量与函数
 dir_shell=/ql/shell
@@ -613,11 +613,6 @@ verify_ck(){
                             jd_cookie=""
                             wsck_to_ck ${wskey_value[$j]}
                             if [[ $jd_cookie ]]; then
-                                unset ck_invalid[i]
-                                ck_status[$j]="0"
-                                ck_valid[i]="${full_name[$j]}\n"
-                                ck_status_chinese="正常"
-                                [[ ${status_last[$j]} = 1 ]] && ck_process_chinese="重启" || ck_process_chinese="启用"
                                 echo -n "，JD_WSCK转换"
                                 ql_update_env_api JD_COOKIE "$jd_cookie" $(eval echo \${$tmp_id[i]})
                             else
@@ -626,7 +621,6 @@ verify_ck(){
                             fi
                         fi
                     fi
-                    valid_time="$((remain_validity_period/3600))小时"
                 elif [[ $remain_validity_period -ge 60 ]]; then
                     valid_time="$((remain_validity_period/60))分钟"
                 elif [[ $remain_validity_period -ge 1 ]]; then

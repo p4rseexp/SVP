@@ -618,10 +618,10 @@ verify_ck(){
                                 ck_valid[i]="${full_name[$j]}\n"
                                 ck_status_chinese="正常"
                                 [[ ${status_last[$j]} = 1 ]] && ck_process_chinese="重启" || ck_process_chinese="启用"
-                                echo -e "，JD_WSCK转换"
+                                echo -n "，JD_WSCK转换"
                                 ql_update_env_api JD_COOKIE "$jd_cookie" $(eval echo \${$tmp_id[i]})
                             else
-                                echo -e "，JD_WSCK失效或转换失败"
+                                echo -n "，JD_WSCK失效或转换失败"
                                 wskey_invalid[i]="${full_name[$j]}\n"
                             fi
                         fi

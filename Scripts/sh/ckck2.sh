@@ -607,7 +607,7 @@ verify_ck(){
             else
                 if [[ $remain_validity_period -ge 3600 ]]; then
                     valid_time="$((remain_validity_period/3600))小时"
-                    if [[ $((remain_validity_period/3600)) -lt 3 && $WSKEY_AUTO_UPDATE = 1 ]]; then
+                    if [[ $((remain_validity_period/3600)) -lt 5 && $WSKEY_AUTO_UPDATE = 1 ]]; then
                         echo -e "${full_name[$j]} 剩余有效期$valid_time"
                         if [[ ${wskey_value[$j]} ]]; then
                             jd_cookie=""

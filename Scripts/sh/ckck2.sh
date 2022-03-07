@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-## Build 20220302-004-Alpha
+## Build 20220306-001-Alpha
 
 ## 导入通用变量与函数
 dir_shell=/ql/shell
@@ -794,126 +794,100 @@ verify_ck(){
 
 ## 检测到失效账号，自动使用JD_WSCK(wskey) 转换 JD_COOKIE
 wsck_to_ck(){
-    local wskey=$1
-    local host params
-    jd_cookie=""
-    wskey_sign_api=("http://43.135.90.23/" "https://shizuku.ml/" "https://cf.shizuku.ml/")
-    get_jdCookie(){
+
+    Get_UA(){
+        # 获取 User-Agent
+        wskey_sign_api=("http://43.135.90.23/" "https://shizuku.ml/" "https://cf.shizuku.ml/")
         for host in ${wskey_sign_api[@]}; do
             local url="${host}check_api"
             local api=$(
                 curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
                     -H "Authorization: Bearer Shizuku"
             )
-
             local code=$(echo $api | jq -r .code)
             if [[ $code == 200 ]]; then
-                local UA=$(echo $api | jq -r '.["User-Agent"]')
-                local url="${host}genToken"
-                local api=$(
-                    curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
-                        -H "User-Agent: $UA"
-                )
-
-                #for params in functionId clientVersion build client partner oaid sdkVersion lang harmonyOs networkType uemps ext ef ep st sign sv; do
-                for params in functionId clientVersion client ef ep st sign sv; do
-                
-                    if [[ $params = ext || $params = ep ]]; then
-                        eval $params='$(urlencode $(echo $api | jq -r .$params))'
-                    else
-                        eval $params='$(echo $api | jq -r .$params)'
-                    fi
-                done
-
-                #local url="https://api.m.jd.com/client.action?functionId=${functionId}&body=%7B%22to%22%3A%22https%253a%252f%252fplogin.m.jd.com%252fjd-mlogin%252fstatic%252fhtml%252fappjmp_blank.html%22%7D&clientVersion=${clientVersion}&build=${build}&client=${client}&partner=${partner}&oaid=${oaid}&sdkVersion=${sdkVersion}&lang=${lang}&harmonyOs=${harmonyOs}&networkType=${networkType}&uemps=${uemps}&ext=${ext}&ef=${ef}&ep=${ep}&st=${st}&sign=${sign}&sv=${sv}"
-                local url="https://api.m.jd.com/client.action?functionId=${functionId}&body=%7B%22to%22%3A%22https%253a%252f%252fplogin.m.jd.com%252fjd-mlogin%252fstatic%252fhtml%252fappjmp_blank.html%22%7D&clientVersion=${clientVersion}&client=${client}&ef=${ef}&ep=${ep}&st=${st}&sign=${sign}&sv=${sv}"
-                local api=$(
-                    curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
-                        -H "Cookie: $wskey" \
-                        -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
-                        -H "charset: UTF-8" \
-                        -H "Accept-Encoding: br,deflate" \
-                        -H "User-Agent: $UA"
-                )
-
-                local code=$(echo $api | jq -r .code)
-                if [[ $code == 0 ]]; then
-                    tokenKey=$(echo $api | jq -r .tokenKey)
-                    
-                    # 获取 pt_pin 和 pt_key
-                    local url="https://un.m.jd.com/cgi-bin/app/appjmp?tokenKey=${tokenKey}&to=https://plogin.m.jd.com/jd-mlogin/static/html/appjmp_blank.html"
-                    local api=$(
-                        curl -I -s -k --connect-timeout 20 --retry 3 --noproxy "*" "${url}" \
-                            -H "Connection: Keep-Alive" \
-                            -H "Accept: */*" \
-                            -H "User-Agent: $UA" \
-                            -H "Accept-Language: zh-Hans-CN;q=1, en-CN;q=0.9" \
-                            -H "Content-Type: application/x-www-form-urlencoded" \
-                            -H "x-requested-with: com.jingdong.app.mall"
-                    )
-                    [[ "$api" == *pt_key=app_open* ]] && jd_cookie="$(echo "$api" | grep -Eo 'pt_key=(\S*?);')$(echo "$api" | grep -Eo 'pt_pin=(\S*?);')"
-                    break
-                else
-                    echo -n "(JD_WSCK(wskey) 转换 API 访问失败)"
-                fi
-            else
-                echo -n "(签名(Sign) 参数获取接口错误)"
+                UA=$(echo $api | jq -r '.["User-Agent"]')
+                break
             fi
         done
     }
-
-    get_jdCookie
-}
-
-wsck_to_ck_1(){
-    local wskey=$1
-    jd_cookie=""
-    wskey_sign_api=("http://43.135.90.23/" "https://shizuku.ml/" "https://cf.shizuku.ml/")
-
-    # 获取 User-Agent
-    for host in ${wskey_sign_api[@]}; do
-        local url="${host}check_api"
-        local api=$(
-            curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
-                -H "Authorization: Bearer Shizuku"
-        )
-        local code=$(echo $api | jq -r .code)
-        if [[ $code == 200 ]]; then
-            UA=$(echo $api | jq -r '.["User-Agent"]')
-            break
-        fi
-    done
-
-    # 获取 Sign 参数
-    local url="https://api.jds.codes/jd/gentoken"
-    local api=$(
-        curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "${url}" \
-            -H "Content-Type: application/json" \
-            -d '{"url": "https://home.m.jd.com/myJd/newhome.action"}'
-    )
-    local code=$(echo $api | jq -r .code)
-    if [[ $code == 200 ]]; then
-        sign=$(echo $api | jq -r .data.sign)
-
-        # 获取 Token 令牌
-        local url="https://api.m.jd.com/client.action?functionId=genToken&${sign}"
-        [[ ! $UA ]] && local UA='jdapp;android;10.3.5;;;appBuild/92468;ef/1;ep/{"hdid":"JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw=","ts":1645931844119,"ridx":-1,"cipher":{"sv":"CJS=","ad":"EWS1EJU5ZJOzENO2Yzu5EK==","od":"YtLvCWS0EWVtYJY1ENqyCm==","ov":"CzO=","ud":"EWS1EJU5ZJOzENO2Yzu5EK=="},"ciphertype":5,"version":"1.2.0","appname":"com.jingdong.app.mall"};Mozilla/5.0 (Linux; Android 12; M2102K1C Build/SKQ1.211006.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/97.0.4692.98 Mobile Safari/537.36'
+    
+    Get_Token_jds(){
+        # 获取 Sign 参数
+        local url="https://api.jds.codes/jd/gentoken"
         local api=$(
             curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "${url}" \
-                -X 'POST' \
-                -H "Host: api.m.jd.com" \
-                -H "Cookie: $wskey" \
-                -H "Accept: */*" \
-                -H "User-Agent: $UA" \
-                -H "Accept-Language: zh-Hans-CN;q=1, en-CN;q=0.9" \
-                -H "Content-Type: application/x-www-form-urlencoded"
+                -H "Content-Type: application/json" \
+                -d '{"url": "https://home.m.jd.com/myJd/newhome.action"}'
         )
-
+    
         local code=$(echo $api | jq -r .code)
-        if [[ $code == 0 ]]; then
-            tokenKey=$(echo $api | jq -r .tokenKey)
-
-            # 获取 pt_pin 和 pt_key
+        if [[ $code == 200 ]]; then
+            sign=$(echo $api | jq -r .data.sign)
+    
+            # 获取 Token 令牌
+            local url="https://api.m.jd.com/client.action?functionId=genToken&${sign}"
+            [[ ! $UA ]] && local UA='jdapp;android;10.3.5;;;appBuild/92468;ef/1;ep/{"hdid":"JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw=","ts":1645931844119,"ridx":-1,"cipher":{"sv":"CJS=","ad":"EWS1EJU5ZJOzENO2Yzu5EK==","od":"YtLvCWS0EWVtYJY1ENqyCm==","ov":"CzO=","ud":"EWS1EJU5ZJOzENO2Yzu5EK=="},"ciphertype":5,"version":"1.2.0","appname":"com.jingdong.app.mall"};Mozilla/5.0 (Linux; Android 12; M2102K1C Build/SKQ1.211006.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/97.0.4692.98 Mobile Safari/537.36'
+            local api=$(
+                        curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
+                            -H "Cookie: $wskey" \
+                            -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+                            -H "charset: UTF-8" \
+                            -H "Accept-Encoding: br,deflate" \
+                            -H "User-Agent: $UA"
+            )
+    
+            local code=$(echo $api | jq -r .code)
+            if [[ $code == 0 ]]; then
+                if [[ $api == *tokenKey* ]]; then
+                    tokenKey=$(echo $api | jq -r .tokenKey)
+                fi
+            fi
+        fi
+    }
+    
+    Get_Token_Zy143L(){
+        # 获取 Sign 参数
+        for host in ${wskey_sign_api[@]}; do
+            local url="${host}genToken"
+            local api=$(
+                curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
+                    -H "User-Agent: $UA"
+            )
+    
+            #for params in functionId clientVersion build client partner oaid sdkVersion lang harmonyOs networkType uemps ext ef ep st sign sv; do
+            for params in functionId clientVersion client ef ep st sign sv; do
+                if [[ $params = ext || $params = ep ]]; then
+                    eval $params='$(urlencode $(echo $api | jq -r .$params))'
+                else
+                    eval $params='$(echo $api | jq -r .$params)'
+                fi
+            done
+    
+            #local url="https://api.m.jd.com/client.action?functionId=${functionId}&body=%7B%22to%22%3A%22https%253a%252f%252fplogin.m.jd.com%252fjd-mlogin%252fstatic%252fhtml%252fappjmp_blank.html%22%7D&clientVersion=${clientVersion}&build=${build}&client=${client}&partner=${partner}&oaid=${oaid}&sdkVersion=${sdkVersion}&lang=${lang}&harmonyOs=${harmonyOs}&networkType=${networkType}&uemps=${uemps}&ext=${ext}&ef=${ef}&ep=${ep}&st=${st}&sign=${sign}&sv=${sv}"
+            local url="https://api.m.jd.com/client.action?functionId=${functionId}&body=%7B%22to%22%3A%22https%253a%252f%252fplogin.m.jd.com%252fjd-mlogin%252fstatic%252fhtml%252fappjmp_blank.html%22%7D&clientVersion=${clientVersion}&client=${client}&ef=${ef}&ep=${ep}&st=${st}&sign=${sign}&sv=${sv}"
+            local api=$(
+                curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
+                    -H "Cookie: $wskey" \
+                    -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" \
+                    -H "charset: UTF-8" \
+                    -H "Accept-Encoding: br,deflate" \
+                    -H "User-Agent: $UA"
+            )
+    
+            local code=$(echo $api | jq -r .code)
+            if [[ $code == 0 ]]; then
+                if [[ $api == *tokenKey* ]]; then
+                    tokenKey=$(echo $api | jq -r .tokenKey)
+                    break
+                fi
+            fi
+        done
+    }
+    
+    Get_jdCookie(){
+        # 获取 pt_pin 和 pt_key
+        if [[ $tokenKey ]]; then
             local url="https://un.m.jd.com/cgi-bin/app/appjmp?tokenKey=${tokenKey}&to=https://home.m.jd.com/myJd/newhome.action"
             local api=$(
                 curl -I -s -k --connect-timeout 20 --retry 3 --noproxy "*" "${url}" \
@@ -923,14 +897,29 @@ wsck_to_ck_1(){
                     -H "Accept-Language: zh-Hans-CN;q=1, en-CN;q=0.9" \
                     -H "Content-Type: application/x-www-form-urlencoded"
             )
-
-            [[ "$api" == *pt_key=app_open* ]] && jd_cookie="$(echo "$api" | grep -Eo 'pt_key=(\S*?);')$(echo "$api" | grep -Eo 'pt_pin=(\S*?);')"
+    
+            if [[ "$api" =~ "HTTP/2 302" ]]; then
+                if [[ "$api" == *pt_key=app_open* ]]; then 
+                    jd_cookie="$(echo "$api" | grep -Eo 'pt_key=(\S*?);')$(echo "$api" | grep -Eo 'pt_pin=(\S*?);')"
+                else
+                    echo -n "(JD_WSCK(wskey) 错误)"
+                fi
+            else
+                echo -n "(JD_WSCK(wskey) 转换 API 访问失败)"
+            fi
         else
-           echo -n "(JD_WSCK(wskey) 转换 API 访问失败)"
+            echo -n "(获取 tokenKey 令牌失败)"
         fi
-    else
-        echo -n "(签名(Sign) 参数获取接口错误)"
-    fi
+    }
+
+    local wskey=$1
+    local tokenKey
+    jd_cookie=""
+    wskey_sign_api=("http://43.135.90.23/" "https://shizuku.ml/" "https://cf.shizuku.ml/")
+    Get_UA
+    Get_Token_jds
+    [[ ! $tokenKey ]] && Get_Token_Zy143L
+    Get_jdCookie
 }
 
 ## 检测到失效账号，或还未转换为 JD_COOKIE 的 JD_WSCK(wskey)，则搜索或下载wskey转换脚本进行转换

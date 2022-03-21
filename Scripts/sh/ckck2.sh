@@ -1,11 +1,27 @@
 #!/usr/bin/env bash
 
-Ver="Build 20220314-001-Alpha"
+## 版本号
+Ver="Build 20220320-001-Alpha"
 
 ## 导入通用变量与函数
 dir_shell=/ql/shell
 . $dir_shell/share.sh
-. $dir_shell/api.sh
+#. $dir_shell/api.sh
+
+## emoji 符号及分隔线
+emoji_OK="✅"
+emoji_NO="🚫"
+emoji_UNKNOW="❓"
+emoji_MSG="📑"
+emoji_ON="🉑"
+emoji_OFF="🈲"
+emoji_NONE="🈚️"
+emoji_DATE="📆"
+emoji_SOS="🆘"
+emoji_CHART="📊"
+emoji_OUTBOX="📤"
+emoji_INBOX="📥"
+line="————————————————————————————————————————————"
 
 ## 版本号判断
 function version_gt() { test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" != "$1"; }
@@ -16,27 +32,23 @@ cur_version="$(curl -s --noproxy "*" "http://0.0.0.0:5600/api/system"|jq -r .dat
 
 # 定义 json 数据查询工具
 def_envs_tool(){
+    local i
     for i in $@; do
         . $dir_shell/api.sh
-        curl -s --noproxy "*" "http://0.0.0.0:5600/api/envs?searchValue=$i" -H "Authorization: Bearer $token" | jq .data | perl -pe "{s|^\[\|\]$||g; s|\n||g; s|\},$|\}\n|g}"
+        curl -s --noproxy "*" "http://0.0.0.0:5600/api/envs?searchValue=$i" -H "Authorization: Bearer $token" | jq .data
     done
 }
 
 def_json_total(){
-    if [[ $2 = value ]]; then
-        def_envs_tool $1 | perl -pe "{s| ||g}" | jq -r .$2 | grep -v "null"
-    else
-        def_envs_tool $1 | jq -r .$2 | grep -v "null"
-    fi
+    def_envs_tool $1 | jq .[].$2 | tr -d '[]," '
+}
+
+def_json_grep_match(){
+    def_envs_tool $1 | jq .[] | perl -pe '{s|([^}])\n|\1|g}' | grep "$3" | jq .$2 | tr -d '[]," '
 }
 
 def_json(){
-    if [[ $2 = value ]]; then
-        def_envs_tool $1 | perl -pe "{s| ||g}" | grep "$3" | jq -r .$2 | grep -v "null"
-    else
-        def_envs_tool $1 | grep "$3" | jq -r .$2 | grep -v "null"
-    fi
-
+    def_envs_tool $1 | jq .[$2].$3 | perl -pe '{s|^"\|"$||g}' | grep -v "null"
 }
 
 def_json_match(){
@@ -70,15 +82,38 @@ def_sub_value(){
     def_json_total $1 $2 | awk 'NR=='$line''
 }
 
-## 生成pt_pin清单
-gen_pt_pin_array() {
-    ## 生成 json 值清单
-    gen_basic_value(){
-        for i in $@; do
-            eval $i='($(def_json_total JD_COOKIE $i | perl -pe " {s| ||g}"))'
-        done
-    }
+UTC(){
+    local i=$1
+    local d h m s ms
+    if [[ $i -gt 0 ]]; then
+        d=$[i/86400000]
+        h=$[(i-d*86400000)/3600000]
+        m=$[(i-d*86400000-h*3600000)/60000]
+        s=$[(i-d*86400000-h*3600000-m*60000)/1000]
+        ms=$[i-d*86400000-h*3600000-m*60000-s*1000]
+        [[ $d -gt 0 ]] && d="$d天" || d=""
+        [[ $h -gt 0 ]] && h="$h小时" || h=""
+        [[ $m -gt 0 ]] && m="$m分钟" || m=""
+        [[ $s -gt 0 ]] && s="$s秒" || s=""
+        [[ $ms -gt 0 ]] && ms="$ms毫秒" || ms=""
+        if [[ $d || $h || $m || $s || $ms ]]; then
+            echo "$d$h$m$s$ms"
+        else
+            echo "临期"
+        fi
+    fi
+}
 
+## 生成 json 值数组
+gen_basic_value(){
+    for i in $@; do
+        eval $i='($(def_json_total JD_COOKIE $i))'
+    done
+}
+
+## 预备工作
+pre_work() {
+    # 青龙变量 key 识别
     #if version_lt $cur_version 2.11.0; then
     #   tmp_id="_id"
     #else
@@ -86,14 +121,39 @@ gen_pt_pin_array() {
     #fi
 
     tmp_id="id"
-    [[ ! $(def_json_total JD_COOKIE $tmp_id) ]] && tmp_id="_id"
+    [[ $(def_json_total JD_COOKIE $tmp_id) =~ null ]] && tmp_id="_id"
     tmp_update_timestamp="updatedAt"
-    [[ ! $(def_json_total JD_COOKIE $tmp_update_timestamp) ]] && tmp_update_timestamp="timestamp"
-
-    gen_basic_value value $tmp_id
-    sn=($(def_json JD_COOKIE value | awk '{print NR}'))
+    [[ $(def_json_total JD_COOKIE $tmp_update_timestamp) =~ null ]] && tmp_update_timestamp="timestamp"
+    # 生成 JD_COOKIE id 面板更新时间 备注数组
+    gen_basic_value value $tmp_id remarks
+    # 生成序号数组
+    sn=($(def_json_total JD_COOKIE value | awk '{print NR}'))
+    # 生成pin值数组
     pin=($(def_json_total JD_COOKIE value | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
+    # 生成非转码pin值数组
     pt_pin=($(urldecode "${pin[*]}"))
+
+    NOTIFY_WxPusher_Condition
+    Dump_Sign_UA_json
+    wskey_array=($(def_json_total JD_WSCK value))
+    UA_cache_array=($(def_json_value "$dir_scripts/CK_Sign_UA.json" UA))
+    sign_cache_array=($(def_json_value "$dir_scripts/CK_Sign_UA.json" sign))
+
+    ori_valid_pin=($(def_json_match "$dir_scripts/CK_WxPusherUid.json" '"status": 0' pin))
+    [[ ! ${ori_valid_pin[@]} ]] && ori_valid_pin=($(def_json_grep_match JD_COOKIE value '"status": 0'  | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
+    ori_invalid_pin=($(def_json_match "$dir_scripts/CK_WxPusherUid.json" '"status": 1' pin))
+    [[ ! ${ori_invalid_pin[@]} ]] && ori_invalid_pin=($(def_json_grep_match JD_COOKIE value '"status": 1'  | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
+
+    [[ -n "$(echo $NOTIFY_VALID_DAY | sed -n "/^[0-9]\+$/p")" ]] && notify_valid_period="$((NOTIFY_VALID_DAY * 86400000))" || notify_valid_period=""
+    [[ -n "$(echo $WSKEY_UPDATE_VALIDITY_HOUR | sed -n "/^[0-9]\+$/p")" ]] && wskey_update_validity_period="$((WSKEY_UPDATE_VALIDITY_HOUR * 3600000))" || wskey_update_validity_period=""
+
+    #content_top=$(echo "$ExNotify_Top_Content" | awk '{print $0"\n\n"}')
+    #content_bot=$(echo "$ExNotify_Bot_Content" | awk '{print "\n\n"$0}')
+    content_top="$ExNotify_Top_Content\n\n"
+    content_bot="\n\n$ExNotify_Bot_Content"
+
+    [[ $WSKEY_AUTO_ENABLE ]] && process_notify_type_0="生效" || process_notify_type_0="重启"
+    [[ $WSKEY_AUTO_DISABLE ]] && process_notify_type_1="失效" || process_notify_type_1="禁用"
 }
 
 UA_array=(
@@ -130,29 +190,6 @@ NOTIFY_WxPusher_Condition(){
     done
 }
 
-## 预备工作
-pre_work() {
-    NOTIFY_WxPusher_Condition
-    Dump_Sign_UA_json
-    gen_pt_pin_array
-    wskey_array=($(def_json_total JD_WSCK value | perl -pe "{s| ||g}"))
-    UA_cache_array=($(def_json_value "$dir_scripts/CK_Sign_UA.json" UA))
-    sign_cache_array=($(def_json_value "$dir_scripts/CK_Sign_UA.json" sign))
-
-    ori_valid_pin=($(def_json_match "$dir_scripts/CK_WxPusherUid.json" '"status": 0' pin))
-    [[ ! ${ori_valid_pin[@]} ]] && ori_valid_pin=($(def_envs_tool JD_COOKIE | grep '"status": 0' | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
-    ori_invalid_pin=($(def_json_match "$dir_scripts/CK_WxPusherUid.json" '"status": 1' pin))
-    [[ ! ${ori_invalid_pin[@]} ]] && ori_invalid_pin=($(def_envs_tool JD_COOKIE | grep '"status": 1' | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
-
-    [[ -n "$(echo $NOTIFY_VALID_DAY | sed -n "/^[0-9]\+$/p")" ]] && notify_valid_period="$((NOTIFY_VALID_DAY * 86400000))" || notify_valid_period=""
-    [[ -n "$(echo $WSKEY_UPDATE_VALIDITY_HOUR | sed -n "/^[0-9]\+$/p")" ]] && wskey_update_validity_period="$((WSKEY_UPDATE_VALIDITY_HOUR * 3600000))" || wskey_update_validity_period=""
-
-    #content_top=$(echo "$ExNotify_Top_Content" | awk '{print $0"\n\n"}')
-    #content_bot=$(echo "$ExNotify_Bot_Content" | awk '{print "\n\n"$0}')
-    content_top="$ExNotify_Top_Content\n\n"
-    content_bot="\n\n$ExNotify_Bot_Content"
-}
-
 #青龙启用/禁用环境变量API
 ql_process_env_api() {
     local currentTimeStamp=$(date +%s)
@@ -177,9 +214,9 @@ ql_process_env_api() {
     code=$(echo $api | jq -r .code)
     message=$(echo $api | jq -r .message)
     if [[ $code == 200 ]]; then
-        [[ $notify = on ]] && echo -n "$name $process_chinese"
+        [[ $notify = on ]] && echo -n "${emoji_ON} $name$process_chinese"
     else
-        [[ $notify = on ]] && echo -n "$name $process_chinese失败(${message})"
+        [[ $notify = on ]] && echo -n "${emoji_OFF} $name$process_chinese失败(${message})"
     fi
 }
 
@@ -215,9 +252,9 @@ ql_add_env_api() {
     code=$(echo $api | jq -r .code)
     message=$(echo $api | jq -r .message)
     if [[ $code == 200 ]]; then
-        [[ $notify = on ]] && echo -e "$name -> 添加成功"
+        [[ $notify = on ]] && echo -n "${emoji_OK} $name -> 添加成功"
     else
-        [[ $notify = on ]] && echo -e "$name -> 添加失败(${message})"
+        [[ $notify = on ]] && echo -n "${emoji_NO} $name -> 添加失败(${message})"
     fi
 }
 
@@ -228,6 +265,7 @@ ql_update_env_api() {
     local value=$2
     local id=$3
     local remarks=$4
+    local message=$5
     local url="http://0.0.0.0:5600/api/envs"
 
     . $dir_shell/api.sh
@@ -252,11 +290,11 @@ ql_update_env_api() {
     fi
 
     code=$(echo $api | jq -r .code)
-    message=$(echo $api | jq -r .message)
     if [[ $code == 200 ]]; then
-        [[ $notify = on ]] && echo -n "$name -> 更新成功"
+        [[ $notify = on ]] && echo -n "${emoji_OK} $name -> 更新成功(${message})"
     else
-        [[ $notify = on ]] && echo -n "$name -> 更新失败(${message})"
+        message=$(echo $api | jq -r .message)
+        [[ $notify = on ]] && echo -n "${emoji_NO} $name -> 更新失败(${message})"
     fi
 }
 
@@ -281,9 +319,9 @@ WxPusher_notify_api() {
     local summary=$4
     local content=$5
     local frontcontent=$6
-    local content=$(echo -e "$title\n\n$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
     local summary=$(echo -e "$title\n\n$summary" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
-    local summary="${summary:0:89} ……"
+    [[ ${#summary} -ge 100 ]] && local summary="${summary:0:88} ……"
+    local content=$(echo -e "$title\n\n$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
     local url="http://wxpusher.zjiecode.com/api/send/message"
 
     local api=$(
@@ -295,20 +333,22 @@ WxPusher_notify_api() {
     code=$(echo $api | jq -r .code)
     msg=$(echo $api | jq -r .msg)
     if [[ $code == 1000 ]]; then
-        echo -e "#$frontcontent WxPusher 消息发送成功(${uids})\n"
+        echo -e "${emoji_OUTBOX}$frontcontent WxPusher 消息发送成功(${uids})"
     else
         [[ ! $msg ]] && msg="访问 API 超时"
-        echo -e "#$frontcontent WxPusher 消息发送处理失败(${msg})\n"
+        echo -e "${emoji_INBOX}$frontcontent WxPusher 消息发送处理失败(${msg})"
     fi
 }
 
 ## 企业微信机器人通知 API
 QYWX_Bot_notify_api() {
-    local title=$1
-    local content=$2
-    local frontcontent=$3
+    local bot_key=$1
+    local title=$2
+    local content=$3
+    local frontcontent=$4
     local content="$title\n\n$content"
-    local url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${QYWX_KEY}"
+    local content=$(echo -e "$content" | perl -pe '{s|(\")|'\\'\\1|g}')
+    local url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${bot_key}"
 
     local api=$(
         curl -s --noproxy "*" "$url" \
@@ -319,69 +359,74 @@ QYWX_Bot_notify_api() {
     code=$(echo $api | jq -r .errcode)
     msg=$(echo $api | jq -r .errmsg)
     if [[ $code == 0 ]]; then
-        echo -e "#$frontcontent 企业微信机器人消息发送成功\n"
+        echo -e "${emoji_OUTBOX}$frontcontent 企业微信机器人消息发送成功"
     else
         [[ ! $msg ]] && msg="访问 API 超时"
-        echo -e "#$frontcontent 企业微信机器人消息发送处理失败(${msg})\n"
+        echo -e "${emoji_INBOX}$frontcontent 企业微信机器人消息发送处理失败(${msg})"
     fi
 }
 
 ## 企业微信应用通知 API
-QYWX_GetToken_api() {
-    local corpid="$(echo $QYWX_AM | awk -F ',' '{print $1}')"
-    local corpsecret="$(echo $QYWX_AM | awk -F ',' '{print $2}')"
+QYWX_notify_api() {
+    local corpid="$(echo $1 | awk -F ',' '{print $1}')"
+    local corpsecret="$(echo $1 | awk -F ',' '{print $2}')"
+    local userId="$(echo $1 | awk -F ',' '{print $3}')"
+    local agentid="$(echo $1 | awk -F ',' '{print $4}')"
+    local thumb_media_id="$(echo $1 | awk -F ',' '{print $5}')"
+    local author=$2
+    local title=$3
+    local digest=$4
+    local content=$5
+    local frontcontent=$6
+    local ACCESS_TOKEN
+    local digest=$(echo -e "$digest" | perl -pe '{s|(\")|'\\'\\1|g}')
+    local content=$(echo -e "$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
     local url="https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpid}&corpsecret=${corpsecret}"
 
     local api=$(
         curl -s --noproxy "*" "$url"
     )
 
-    code=$(echo $api | jq -r .errcode)
-    msg=$(echo $api | jq -r .errmsg)
-    access_token=$(echo $api | jq -r .access_token)
+    local code=$(echo $api | jq -r .errcode)
+    local msg=$(echo $api | jq -r .errmsg)
     if [[ $code == 0 ]]; then
-        ACCESS_TOKEN=${access_token}
-    fi
-}
+        ACCESS_TOKEN=$(echo $api | jq -r .access_token)
+        local url="https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${ACCESS_TOKEN}"
 
-QYWX_notify_api() {
-    local corpid="$(echo $QYWX_AM | awk -F ',' '{print $1}')"
-    local corpsecret="$(echo $QYWX_AM | awk -F ',' '{print $2}')"
-    local userId="$(echo $QYWX_AM | awk -F ',' '{print $3}')"
-    local agentid="$(echo $QYWX_AM | awk -F ',' '{print $4}')"
-    local thumb_media_id="$(echo $QYWX_AM | awk -F ',' '{print $5}')"
-    local title=$1
-    local digest=$2
-    local content=$3
-    local frontcontent=$4
-    local content=$(echo -e "$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
-    local url="https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${ACCESS_TOKEN}"
+        if [[ $thumb_media_id ]]; then
+            local api=$(
+                curl -s --noproxy "*" "$url" \
+                    -X 'POST' \
+                    -H "Content-Type: application/json" \
+                    --data-raw "{\"touser\":\"$userId\",\"msgtype\":\"mpnews\",\"agentid\":\"$agentid\",\"mpnews\":{\"articles\":[{\"title\":\"$title\",\"thumb_media_id\":\"$thumb_media_id\",\"author\":\"$author\",\"content\":\"$content\",\"digest\":\"$digest\"}]}}"
+            )
+        else
+            local api=$(
+                curl -s --noproxy "*" "$url" \
+                    -X 'POST' \
+                    -H "Content-Type: application/json" \
+                    --data-raw "{\"touser\":\"$userId\",\"msgtype\":\"mpnews\",\"agentid\":\"$agentid\",\"mpnews\":{\"articles\":[{\"title\":\"$title\",\"thumb_media_id\":\"$thumb_media_id\",\"author\":\"$author\",\"content\":\"$content\",\"digest\":\"$digest\"}]}}"
+            )
+        fi
 
-    if [[ $thumb_media_id ]]; then
-        local api=$(
-            curl -s --noproxy "*" "$url" \
-                -X 'POST' \
-                -H "Content-Type: application/json" \
-                --data-raw "{\"touser\":\"$userId\",\"msgtype\":\"mpnews\",\"agentid\":\"$agentid\",\"mpnews\":{\"articles\":[{\"title\":\"$title\",\"thumb_media_id\":\"$thumb_media_id\",\"author\":\"ckck2\",\"content\":\"$content\",\"digest\":\"$digest\"}]}}"
-        )
-    fi
-
-    code=$(echo $api | jq -r .errcode)
-    msg=$(echo $api | jq -r .errmsg)
-    if [[ $code == 0 ]]; then
-        echo -e "#$frontcontent 企业微信应用消息发送成功\n"
-    else
-        [[ ! $msg ]] && msg="访问 API 超时"
-        echo -e "#$frontcontent 企业微信应用消息发送处理失败(${msg})\n"
+        code=$(echo $api | jq -r .errcode)
+        msg=$(echo $api | jq -r .errmsg)
+        if [[ $code == 0 ]]; then
+            echo -e "${emoji_OUTBOX}$frontcontent 企业微信应用消息发送成功"
+        else
+            [[ ! $msg ]] && msg="访问 API 超时"
+            echo -e "${emoji_INBOX}$frontcontent 企业微信应用消息发送处理失败(${msg})"
+        fi
     fi
 }
 
 ## pushplus 通知 API
 pushplus_notify_api() {
     local token=$1
-    local title=$2
-    local content=$3
-    local frontcontent=$4
+    local topic=$2
+    local title=$3
+    local content=$4
+    local frontcontent=$5
     local content=$(echo -e "$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
     local url="http://www.pushplus.plus/send"
 
@@ -395,22 +440,23 @@ pushplus_notify_api() {
     code=$(echo $api | jq -r .code)
     msg=$(echo $api | jq -r .msg)
     if [[ $code == 200 ]]; then
-        echo -e "#$frontcontent pushplus 消息发送成功\n"
+        echo -e "${emoji_OUTBOX}$frontcontent pushplus 消息发送成功"
     else
         if [[ $code == 500 ]]; then
             msg="服务器宕机"
         fi
         [[ ! $msg ]] && msg="访问 API 超时"
-        echo -e "#$frontcontent pushplus 消息发送处理失败(${msg})\n"
+        echo -e "${emoji_INBOX}$frontcontent pushplus 消息发送处理失败(${msg})"
     fi
 }
 
 ## hxtrip pushplus 通知 API
 hxtrip_pushplus_notify_api() {
     local token=$1
-    local title=$2
-    local content=$3
-    local frontcontent=$4
+    local topic=$2
+    local title=$3
+    local content=$4
+    local frontcontent=$5
     local content=$(echo -e "$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|<br>|g}')
     local url="http://pushplus.hxtrip.com/send"
 
@@ -423,13 +469,13 @@ hxtrip_pushplus_notify_api() {
     code=$(echo $api | perl -pe '{s|.*<code>([\d]+)</code>.*|\1|g}')
     msg=$(echo $api | perl -pe '{s|.*<msg>([\S]+)</msg>.*|\1|g}')
     if [[ $code == 200 ]]; then
-        echo -e "#$frontcontent hxtrip pushplus 消息发送成功\n"
+        echo -e "${emoji_OUTBOX}$frontcontent hxtrip pushplus 消息发送成功"
     else
         if [[ $code == 500 ]]; then
             msg="服务器宕机"
         fi
         [[ ! $msg ]] && msg="访问 API 超时"
-        echo -e "#$frontcontent hxtrip pushplus 消息发送处理失败(${msg})\n"
+        echo -e "${emoji_INBOX}$frontcontent hxtrip pushplus 消息发送处理失败(${msg})"
     fi
 }
 
@@ -440,6 +486,7 @@ Telegram_notify_api() {
     local title=$3
     local content=$4
     local frontcontent=$5
+    local content=$(echo -e "$content" | perl -pe '{s|(\")|'\\'\\1|g; s|\n|\\n|g}')
     [[ ! $TG_API_HOST ]] && TG_API_HOST="api.telegram.org"
     local url="https://${TG_API_HOST}/bot${token}/sendMessage"
 
@@ -452,7 +499,7 @@ Telegram_notify_api() {
     fi
 
     local api=$(
-        curl -s --connect-timeout 20 "*" "$url" \
+        curl -s --connect-timeout 20 --retry 3 "*" "$url" \
             -X 'POST' \
             -H "Content-Type: application/json" \
             --data-raw "{\"chat_id\":\"${chat_id}\",\"text\":\"${title}\n\n${content}\",disable_web_page_preview:true}"
@@ -461,10 +508,10 @@ Telegram_notify_api() {
     code=$(echo $api | jq -r .ok)
     msg=$(echo $api | jq -r .description)
     if [[ $code == true ]]; then
-        echo -e "#$frontcontent Telegram 消息发送成功\n"
+        echo -e "${emoji_OUTBOX}$frontcontent Telegram 消息发送成功"
     else
         [[ ! $msg ]] && msg="访问 API 超时"
-        echo -e "#$frontcontent Telegram 消息发送处理失败(${msg})\n"
+        echo -e "${emoji_INBOX}$frontcontent Telegram 消息发送处理失败(${msg})"
     fi
 }
 
@@ -575,16 +622,19 @@ Get_Full_Name(){
     local j=${pin[i]}
     local remarks_ori_id UserName nickname tmp_remarks_id_1 tmp_remarks_id_2 tmp_remarks_id_3 wskey_pin_sub
     # 获取原始备注
-    remarks_ori[$j]="$(def_json JD_COOKIE remarks "pin=$j;" | head -1)"
+    remarks_ori[$j]="${remarks[i]}"
+    [[ ${remarks_ori[$j]} = null ]] && remarks_ori[$j]=""
 
     # JD_COOKIE 相关值
-    value[i]="$(echo "${value[i]}" | grep -Eo 'pt_key=[^; ]+;')$(echo "${value[i]}" | grep -Eo 'pt_pin=[^; ]+;')"
+    value[i]="$(echo ${value[i]} | grep -Eo 'pt_key=[^; ]+');pt_pin=$j;"
 
     # wskey 相关值
-    wskey_value[$j]="$(def_json JD_WSCK value "pin=$j;" | head -1)"
-    wskey_value[$j]="$(echo "${wskey_value[$j]}" | grep -Eo 'pin=[^; ]+;')$(echo "${wskey_value[$j]}" | grep -Eo 'wskey=[^; ]+;')"
-    wskey_id[$j]="$(def_json JD_WSCK $tmp_id "pin=$j;" | head -1)"
-    wskey_remarks[$j]="$(def_json JD_WSCK remarks "pin=$j;" | head -1)"
+    wskey_value[$j]="$(def_json_grep_match JD_WSCK value "pin=$j;" | head -1)"
+    [[ ${wskey_value[$j]} =~ "wskey=" ]] && wskey_value[$j]="pin=$j;$(echo ${wskey_value[$j]} | grep -Eo 'wskey=[^; ]+');"
+    wskey_id[$j]="$(def_json_grep_match JD_WSCK $tmp_id "pin=$j;" | head -1)"
+    wskey_remarks[$j]="$(def_json_grep_match JD_WSCK remarks "pin=$j;" | head -1)"
+    local wskey_pin_sub="$(def_sub JD_WSCK value "pin=$j;")"
+    [[ "$wskey_pin_sub" ]] && for k in $wskey_pin_sub; do unset wskey_array[k]; done
 
     # 昵称及用户名处理
     Get_NickName "${value[i]}"
@@ -627,14 +677,7 @@ Get_Full_Name(){
     remarks_new[$j]="${remarks_id[$j]}"
 
     # 有效期相关
-    tmp_up_timestamp_1[$j]="$(echo ${remarks_ori[$j]} | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}')"
-    tmp_up_timestamp_2[$j]="$[$(date -d "$(def_json JD_COOKIE $tmp_update_timestamp "pin=$j;" | head -1)" +%s%N)/1000000]"
-    if [[ ${tmp_up_timestamp_1[$j]} ]]; then
-        up_timestamp[$j]="${tmp_up_timestamp_1[$j]}"
-    elif [[ ${tmp_up_timestamp_2[$j]} ]]; then
-        up_timestamp[$j]="${tmp_up_timestamp_2[$j]}"
-    fi
-    last_validity_day[$j]="$(def_json_value "$dir_scripts/CK_WxPusherUid.json" validity_day "pin=$j;")"
+    tmp_up_timestamp_env[$j]="$(echo ${remarks_ori[$j]} | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}')"
 
     # WxPusherUid 相关值
     tmp_Uid_1[$j]="$(echo ${remarks_ori[$j]} | grep -Eo 'UID_\w{28}')"
@@ -654,12 +697,11 @@ verify_ck(){
     check_ck(){
         local i=$1
         local j=${pin[i]}
-        local jd_cookie ckck_code ckck_msg
-        status_ori[$j]="$(def_json JD_COOKIE status "pin=$j;")"
+        local jd_cookie emoji
+        status_ori[$j]="$(def_json JD_COOKIE $i status)"
         status_last[$j]="$(def_json_value "$dir_scripts/CK_WxPusherUid.json" status "pin=$j;")"
         [[ ! ${status_last[$j]} ]] && status_last[$j]=${status_ori[$j]}
 
-        Get_Full_Name $i
         ck_status[$j]="$ckck_code"
         if [[ $ckck_code = 0 ]]; then
             ck_valid[i]="${full_name[$j]}\n"
@@ -670,23 +712,25 @@ verify_ck(){
                 ck_status_chinese="正常"
                 ck_process_chinese="启用"
             fi
+            emoji=$emoji_OK
         elif [[ $ckck_code = 1 ]]; then
             ck_invalid[i]="${full_name[$j]}\n"
             ck_status_chinese="失效"
             ck_process_chinese="禁用"
+            emoji=$emoji_NO
         else
             ck_unknown_state[i]="${full_name[$j]}\n"
             ck_status_chinese="因$ckck_msg跳过检测"
+            emoji=$emoji_MSG
         fi
-        echo -n "${full_name[$j]} $ck_status_chinese"
+        echo -n "${emoji} JD_COOKIE$ck_status_chinese"
     }
 
     wskey_analysis(){
         local i=$1
         local j=${pin[i]}
         local notify=$2
-        local timestamp_ms
-        [[ $notify = on ]] && echo -e "" && echo -n "${full_name[$j]} "
+        local timestamp_ms emoji
         if [[ $wsck_to_ck_code = 0 ]]; then
             wskey_status[$j]="0"
             if [[ ${wskey_status_last[$j]} = 1 ]]; then
@@ -696,22 +740,26 @@ verify_ck(){
                 wskey_status_chinese="正常"
                 wskey_process_chinese="启用"
             fi
+            emoji=$emoji_OK
         else
             if [[ $wsck_to_ck_code = 4 ]]; then
                 wskey_status[$j]="1"
                 wskey_status_chinese="失效"
                 wskey_process_chinese="禁用"
                 wskey_invalid[i]="${full_name[$j]}\n"
+                emoji=$emoji_NO
             else
                 wskey_status[$j]="2"
                 wskey_status_chinese="因$wsck_to_ck_msg跳过检测"
+                emoji=$emoji_MSG
             fi
         fi
-        [[ $notify = on ]] && echo -n "JD_WSCK(wskey)$wskey_status_chinese"
+        [[ $notify = on ]] && echo -e "" && echo -n "${emoji} JD_WSCK(wskey)$wskey_status_chinese"
         if [[ ${wskey_status[$j]} = 0 || ${wskey_status[$j]} = 1 ]]; then
             if [[ ${wskey_status[$j]} != ${wskey_status_ori[$j]} ]]; then
-                echo -n "并将"
+                echo -e ""
                 ql_process_env_api JD_WSCK ${wskey_id[$j]} ${wskey_status[$j]} $wskey_process_chinese
+                echo -e ""
             fi
         fi
         if [[ ${ck_status[$j]} = 1 ]]; then
@@ -727,10 +775,9 @@ verify_ck(){
                     ck_status_chinese="正常"
                     ck_process_chinese="启用"
                 fi
-                [[ ${status_last[$j]} = 1 ]] && ck_process_chinese="重启" || ck_process_chinese="启用"
+                [[ $notify = on ]] && echo -e "" && echo -n "${emoji_OK} $wsck_to_ck_msg"
                 timestamp_ms="$[$(date +%s%N)/1000000]"
-                [[ $notify = on ]] && echo -n "，$wsck_to_ck_msg，"
-                if [[ ${tmp_up_timestamp_1[$j]} ]]; then
+                if [[ ${tmp_up_timestamp_env[$j]} ]]; then
                     remarks_new[$j]="$(echo ${remarks_ori[$j]} | perl -pe "{s|@@[\d]+|\@\@$timestamp_ms|g}")"
                 else
                     if [[ ${Uid[$j]} ]]; then
@@ -739,9 +786,10 @@ verify_ck(){
                         remarks_new[$j]="${remarks_id[$j]}@@$timestamp_ms"
                     fi
                 fi
-                ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) ${remarks_new[$j]}
+                echo -e ""
+                ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" "更新环境变量值"
             else
-                [[ $notify = on ]] && echo -n "，因$wsck_to_ck_msg导致转换JD_COOKIE失败"
+                [[ $notify = on ]] && echo -e "" && echo -n "${emoji_MSG} 因$wsck_to_ck_msg，转换JD_COOKIE失败"
             fi
         fi
     }
@@ -751,14 +799,14 @@ verify_ck(){
         local i=$1
         local j=${pin[i]}
         local notify=$2
-        wskey_status_ori[$j]="$(def_json JD_WSCK status "pin=$j;" | head -1)"
+        wskey_status_ori[$j]="$(def_json_grep_match JD_WSCK status "pin=$j;" | head -1)"
         wskey_status_last[$j]="$(def_json_value "$dir_scripts/CK_WxPusherUid.json" wskey_status "pin=$j;")"
         [[ ! ${wskey_status_last[$j]} ]] && wskey_status_last[$j]=${wskey_status_ori[$j]}
 
         if [[ ! ${wskey_value[$j]} ]]; then
             wskey_status[$j]="3"
             ck_none_wskey[i]="${full_name[$j]}\n"
-            [[ $notify = on ]] && [[ $NOTIFY_WSKEY_NO_EXIST = 1 || $NOTIFY_WSKEY_NO_EXIST = 2 ]] && echo -e "" && echo -n "${full_name[$j]} 未录入JD_WSCK(wskey)"
+            [[ $notify = on ]] && [[ $NOTIFY_WSKEY_NO_EXIST = 1 || $NOTIFY_WSKEY_NO_EXIST = 2 ]] && echo -e "" && echo -n "${emoji_NONE} 未录入JD_WSCK(wskey)"
         else
             wsck_to_ck ${wskey_value[$j]}
             wskey_analysis $i on
@@ -766,7 +814,7 @@ verify_ck(){
 
         if [[ ${ck_status[$j]} != ${status_ori[$j]} ]]; then
             if [[ ${ck_status[$j]} = 0 && ! $WSKEY_AUTO_ENABLE ]] || [[ ${ck_status[$j]} = 1 && ! $WSKEY_AUTO_DISABLE ]]; then
-                echo -n "，"
+                echo -e ""
                 ql_process_env_api JD_COOKIE $(eval echo \${$tmp_id[i]}) ${ck_status[$j]} $ck_process_chinese
                 echo -e ""
             fi
@@ -775,53 +823,52 @@ verify_ck(){
         fi
     }
 
-    # 账号剩余有效期检查
+    # 账号有效期检查
     check_validity(){
         local i=$1
         local notify=$2
         local j=${pin[i]}
-        local total_validity_period timestamp_ms past_period remain_validity_period last_validity_period valid_time
+        local tmp_up_timestamp_1 tmp_up_timestamp_2 total_validity_period timestamp_ms past_period remain_validity_period last_validity_period valid_time
         if [[ ${ck_status[$j]} = 0 ]]; then
+            tmp_up_timestamp_1="$(echo $(def_json JD_COOKIE $i remarks) | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}')"
+            tmp_up_timestamp_2="$[$(date -d "$(def_json JD_COOKIE $i $tmp_update_timestamp)" +%s%N)/1000000]"
+            if [[ $tmp_up_timestamp_1 ]]; then
+                up_timestamp[$j]="$tmp_up_timestamp_1"
+            elif [[ $tmp_up_timestamp_2 ]]; then
+                up_timestamp[$j]="$tmp_up_timestamp_2"
+            fi
             timestamp_ms="$[$(date +%s%N)/1000000]"
-            [[ ${value[i]} == *app_open* ]] && total_validity_period=$((24*3600*1000)) || total_validity_period=$((30*24*3600*1000))
-            past_period=$((timestamp_ms-up_timestamp[$j]))
-            remain_validity_period=$((total_validity_period-past_period))
+            [[ ${value[i]} == *app_open* ]] && total_validity_period=$[24*3600*1000] || total_validity_period=$[30*24*3600*1000]
+            past_period=$[timestamp_ms-up_timestamp[$j]]
+            remain_validity_period=$[total_validity_period-past_period]
             if [[ $remain_validity_period -lt 0 ]]; then
-                up_timestamp[$j]="${tmp_up_timestamp_2[$j]}"
-                past_period=$((timestamp_ms-up_timestamp[$j]))
-                remain_validity_period=$((total_validity_period-past_period))
+                up_timestamp[$j]="$tmp_up_timestamp_2"
+                past_period=$[timestamp_ms-up_timestamp[$j]]
+                remain_validity_period=$[total_validity_period-past_period]
             fi
-            if [[ $remain_validity_period -ge 86400000 ]]; then
-                valid_time="$((remain_validity_period/86400000))天"
-            else
-                if [[ $remain_validity_period -ge 3600000 ]]; then
-                    valid_time="$((remain_validity_period/3600000))小时"
-                elif [[ $remain_validity_period -ge 60000 ]]; then
-                    valid_time="$((remain_validity_period/60000))分钟"
-                elif [[ $remain_validity_period -ge 1000 ]]; then
-                    valid_time="$((remain_validity_period/1000))秒"
-                elif [[ $remain_validity_period -ge 1 ]]; then
-                    valid_time="$remain_validity_period毫秒"
-                fi
-                [[ ! ${value[i]} =~ app_open ]] && ck_validity_lt_1day[i]="${full_name[$j]}\n"
-            fi
+            valid_time=$(UTC $remain_validity_period)
+            [[ ! ${value[i]} =~ app_open ]] && [[ $remain_validity_period -lt 86400000 ]] && ck_validity_lt_1day[i]="${full_name[$j]}\n"
             if [[ $NOTIFY_VALID_TIME = 1 || $NOTIFY_VALID_TIME = 2 ]]; then
-                ck_validity[i]="${full_name[$j]} 剩余有效期$valid_time\n"
-                [[ $notify = on ]] && echo -e "${full_name[$j]} 剩余有效期$valid_time"
+                ck_validity[i]="${full_name[$j]} $(echo $valid_time | perl -pe '{s|([\d]*[^\d]+).*|\1|}')\n"
+                [[ $notify = on ]] && echo -e "${emoji_DATE} 账号有效期$valid_time"
             fi
-            validity_day[$j]=$((remain_validity_period/86400000))
-            validity_less_then_day[$j]=$(((remain_validity_period+86400000)/86400000))
+            validity_day[$j]=$[remain_validity_period/86400000]
+            validity_less_then_day[$j]=$[(remain_validity_period+86400000)/86400000]
+            last_validity_day[$j]="$(def_json_value "$dir_scripts/CK_WxPusherUid.json" validity_day "pin=$j;")"
             if [[ $notify_valid_period ]]; then
-                last_validity_period=$((last_validity_day[$j]*86400000))
+                last_validity_period=$[last_validity_day[$j]*86400000]
                 if [[ $remain_validity_period -lt $last_validity_period ]] && [[ $remain_validity_period -le $notify_valid_period ]] && [[ ! ${value[i]} =~ app_open ]]; then
-                    [[ $notify = on ]] && [[ $NOTIFY_VALID_TIME = 1 || $NOTIFY_VALID_TIME = 2 ]] && echo -e "${full_name[$j]} 剩余有效期不足${validity_less_then_day[$j]}天"
+                    [[ $notify = on ]] && [[ $NOTIFY_VALID_TIME = 1 || $NOTIFY_VALID_TIME = 2 ]] && echo -e "${emoji_SOS} 账号有效期不足${validity_less_then_day[$j]}天"
                     log_one_to_one_validity_day $i " ${full_name[$j]}"
                 fi
             fi
             if [[ $remain_validity_period -lt $wskey_update_validity_period ]] && [[ ${wskey_status[$j]} = 0 ]]; then
-                [[ $notify = on ]] && echo -n "${full_name[$j]} 剩余有效期不足$WSKEY_UPDATE_VALIDITY_HOUR小时，触发强制JD_WSCK转换，"
+                [[ $notify = on ]] && echo -e "${emoji_SOS} 账号有效期不足$WSKEY_UPDATE_VALIDITY_HOUR小时，触发强制JD_WSCK转换"
                 value[i]=$jd_cookie
-                if [[ ${tmp_up_timestamp_1[$j]} ]]; then
+                ck_validity[i]="${full_name[$j]} 账号有效期1天\n"
+                validity_day[$j]="0"
+                timestamp_ms="$[$(date +%s%N)/1000000]"
+                if [[ ${tmp_up_timestamp_env[$j]} ]]; then
                     remarks_new[$j]="$(echo ${remarks_ori[$j]} | perl -pe "{s|@@[\d]+|\@\@$timestamp_ms|g}")"
                 else
                     if [[ ${Uid[$j]} ]]; then
@@ -830,7 +877,7 @@ verify_ck(){
                         remarks_new[$j]="${remarks_id[$j]}@@$timestamp_ms"
                     fi
                 fi
-                ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) ${remarks_new[$j]}
+                ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" "更新环境变量值"
                 echo -e ""
             fi
         else
@@ -847,19 +894,19 @@ verify_ck(){
         local j=${pin[i]}
         local timestamp_ms ori_timestamp_ms NickName_Json remarks_id_Json
         timestamp_ms="$(echo ${remarks_ori[$j]} | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}' | head -1)"
-        [[ $timestamp_ms ]] && [[ ! ${tmp_Uid_1[$j]} ]] && [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]] && ck_undocked_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && echo -e "${full_name[$j]} 未完成对接WxPusher UID"
+        [[ $timestamp_ms ]] && [[ ! ${tmp_Uid_1[$j]} ]] && [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]] && ck_undocked_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && echo -e "${emoji_SOS} WxPusher UID未对接完成"
         if [[ ${Uid[$j]} ]]; then
             ori_timestamp_ms="$timestamp_ms"
             [[ ! $timestamp_ms ]] && timestamp_ms="$[$(date +%s%N)/1000000]"
             remarks_new[$j]="${remarks_id[$j]}@@$timestamp_ms@@${Uid[$j]}"
             if [[ ! ${tmp_Uid_1[$j]} ]] || [[ ! $ori_timestamp_ms ]]; then
                 if [[ $SCANF_WXPusher_Remarks = 1 ]]; then
-                    ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}"
+                    ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" "补全JD_COOKIE备注时间戳"
                     echo -e ""
                 fi
             fi
         fi
-        [[ ! ${Uid[$j]} ]] && ck_no_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]] && echo -e "${full_name[$j]} 未录入WxPusher UID"
+        [[ ! ${Uid[$j]} ]] && ck_no_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]] && echo -e "${emoji_NONE} 未录入WxPusher UID"
         NickName_Json="$(spc_sym_tr ${NickName[$j]})"
         remarks_id_Json="$(spc_sym_tr ${remarks_id[$j]})"
         CK_WxPusherUid_Json[i]="{\n\t\"序号\": \"${sn[i]}\",\n\t\"NickName\": \"$NickName_Json\",\n\t\"JD_COOKIE\": \"${value[i]}\",\n\t\"status\": ${ck_status[$j]},\n\t\"validity_day\": ${validity_day[$j]},\n\t\"remarks\": \"$remarks_id_Json\",\n\t\"JD_WSCK\": \"${wskey_value[$j]}\",\n\t\"wskey_status\": ${wskey_status[$j]},\n\t\"pin\": \"$j\",\n\t\"pt_pin\": \"${pt_pin[i]}\",\n\t\"Uid\": \"${Uid[$j]}\"\n},\n"
@@ -868,14 +915,13 @@ verify_ck(){
     # 同步备注名
     sync_nick_to_ck(){
         local i=$1
+        local notify=$2
         local j=${pin[i]}
         # 将昵称更新至 JD_COOKIE 的备注
         if [[ $NICKNAME_REMARK_SYNC = 1 ]]; then
             if [[ ${remarks_id[$j]} ]]; then
                 if [[ ! "${remarks_ori[$j]}" =~ "${NickName[$j]}" ]]; then
-                    echo -n "${full_name[$j]} "
-                    ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}"
-                    echo -e ""
+                    ql_update_env_api JD_COOKIE "${value[i]}" "$(eval echo \${$tmp_id[i]})" "${remarks_new[$j]}" "补全JD_COOKIE备注昵称" && echo -e ""
                     Get_Full_Name $i
                 fi
             fi
@@ -885,11 +931,11 @@ verify_ck(){
         if [[ $WSKEY_REMARK_SYNC = 1 ]]; then
             if [[ ${remarks_id[$j]} ]]; then
                 if [[ ! ${remarks_ori[$j]} ]]; then
-                    echo -n "${full_name[$j]} " && ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" && echo -e ""
+                    ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" "添加JD_COOKIE备注" && echo -e ""
                     #Get_Full_Name $i
                 fi
                 if [[ ${wskey_value[$j]} ]] && [[ ${remarks_id[$j]} != ${wskey_remarks[$j]} ]]; then
-                    echo -n "${full_name[$j]} " && ql_update_env_api JD_WSCK "${wskey_value[$j]}" ${wskey_id[$j]} "${remarks_id[$j]}" && echo -e ""
+                    ql_update_env_api JD_WSCK "${wskey_value[$j]}" "${wskey_id[$j]}" "${remarks_id[$j]}" "更新JD_WSCK备注" && echo -e ""
                     #Get_Full_Name $i
                 fi
             fi
@@ -928,7 +974,7 @@ verify_ck(){
                 [[ ${ck_no_uid[i]} ]] && content_5="，未录入 WxPusher UID"
                 summary="$content_1$content_2$content_3$content_4$content_5"
                 content="$content_top$content_1$content_2$content_3$content_4$content_5$content_bot"
-                WxPusher_notify_api $WP_APP_TOKEN_ONE "$uid" "$title" "$summary" "$content" "$full_name"
+                WxPusher_notify_api $WP_APP_TOKEN_ONE "$uid" "$title" "$summary" "$content"
             fi
         fi
     }
@@ -957,7 +1003,7 @@ verify_ck(){
                 content_1="$full_name 账号有效期不足 ${validity_less_then_day[$j]} 天"
                 summary="$content_1"
                 content="$content_top$content_1$content_bot"
-                WxPusher_notify_api $WP_APP_TOKEN_ONE "$uid" "$title" "$summary" "$content" "$full_name"
+                WxPusher_notify_api $WP_APP_TOKEN_ONE "$uid" "$title" "$summary" "$content"
             fi
         fi
     }
@@ -965,47 +1011,53 @@ verify_ck(){
     local wsck_to_ck_code wsck_to_ck_msg timestamp_ms tokenKey host
     for i in ${!value[@]}; do
         local j=${pin[i]}
-        local ck_status_chinese ck_process_chinese wskey_status_chinese wskey_process_chinese
+        local ckck_code ckck_msg ck_status_chinese ck_process_chinese wskey_status_chinese wskey_process_chinese
         Checksum_code[i]=${pin[i]}
         echo ""
+        Get_Full_Name $i
+        echo -e "$line"
+        echo -e "🧑‍🌾${full_name[$j]} "
         check_ck $i
         check_wskey $i on
         check_validity $i on
         wxpusher_json $i on
-        sync_nick_to_ck $i
-        if [[ ${ck_status[$j]} != ${status_last[$j]} ]] && [[ ${ck_status[$j]} = 0 || ${ck_status[$j]} = 1 ]] && [[ ${status_last[$j]} = 0 || ${status_last[$j]} = 1 ]]; then
-            log_one_to_one $i "$ck_process_chinese" "$ck_status_chinese" " ${full_name[$j]}"
-        elif [[ ${ck_status[$j]} = 1 ]] && [[ $NOTIFY_WxPusher_Schedule = on ]]; then
+        sync_nick_to_ck $i on
+        if [[ ${ck_status[$j]} = 0 && ${status_last[$j]} = 1 ]] || [[ ${ck_status[$j]} = 1 && ${status_last[$j]} = 0 ]] || [[ ${ck_status[$j]} = 1 && $NOTIFY_WxPusher_Schedule = on ]]; then
+            if [[ ${ck_status[$j]} = 0 && ${status_last[$j]} = 1 ]]; then
+                ck_valid_this_time[i]="${full_name[$j]}\n"
+            elif [[ ${ck_status[$j]} = 1 && ${status_last[$j]} = 0 ]]; then
+                ck_invalid_this_time[i]="${full_name[$j]}\n"
+            fi
             log_one_to_one $i "$ck_process_chinese" "$ck_status_chinese" " ${full_name[$j]}"
         fi
-        wskey_pin_sub="$(def_sub JD_WSCK value "pin=$j;")"
-        [[ "$wskey_pin_sub" ]] && for k in "$wskey_pin_sub"; do unset wskey_array[k]; done
+        echo -e "$line"
     done
 
     if [[ ${#wskey_array[@]} -gt 0 ]]; then
-        echo -e "\n# 检测到还未转换 JD_COOKIE 的 JD_WSCK(wskey)，开始进行 wskey 转换 ..."
+        echo -e "\n${emoji_MSG} 检测到还未转换 JD_COOKIE 的 JD_WSCK(wskey)，开始进行 wskey 转换 ...\n"
         local notify="on"
         for other_wskey in ${wskey_array[@]}; do
+            echo -e "$line"
             let i++
             sn[i]=$((i + 1))
             pin[i]=$(echo $other_wskey | perl -pe "{s|.*pin=([^; ]+)(?=;?).*|\1|}")
             pt_pin[i]=$(urldecode "${pin[i]}")
             value[i]="pt_key=;pt_pin=${pin[i]}"
             j=${pin[i]}
+            [[ $other_wskey =~ "wskey=" ]] && other_wskey="pin=$j;$(echo $other_wskey | grep -Eo 'wskey=[^; ]+');"
             Get_Full_Name $i
             wsck_to_ck $other_wskey
             if [[ $wsck_to_ck_code = 0 ]]; then
+                ck_status[$j]="0"
                 wskey_status[$j]="0"
                 value[i]=$jd_cookie
                 Get_Full_Name $i
-                echo -n "${full_name[$j]} "
-                ck_status[$j]="0"
                 ck_added[i]="${full_name[$j]}\n"
                 ck_valid[i]="${full_name[$j]}\n"
                 ck_status_chinese="生效"
                 ck_process_chinese="添加"
                 timestamp_ms="$[$(date +%s%N)/1000000]"
-                if [[ ${tmp_up_timestamp_1[$j]} ]]; then
+                if [[ ${tmp_up_timestamp_env[$j]} ]]; then
                     remarks_new[$j]="$(echo ${remarks_ori[$j]} | perl -pe "{s|@@[\d]+|\@\@$timestamp_ms|g}")"
                 else
                     if [[ ${Uid[$j]} ]]; then
@@ -1014,9 +1066,10 @@ verify_ck(){
                         remarks_new[$j]="${remarks_id[$j]}@@$timestamp_ms"
                     fi
                 fi
-                echo -n "$wsck_to_ck_msg，"
+                echo -e "🧑‍🌾${full_name[$j]}"
+                echo -e "${emoji_OK} $wsck_to_ck_msg"
                 ql_add_env_api JD_COOKIE "${value[i]}" "${remarks_new[$j]}"
-                eval $tmp_id[i]="$(def_json JD_COOKIE $tmp_id "pin=$j;" | head -1)"
+                eval $tmp_id[i]="$(def_json JD_COOKIE $i $tmp_id)"
                 check_validity $i
                 wxpusher_json $i
                 sync_nick_to_ck $i
@@ -1028,8 +1081,10 @@ verify_ck(){
                 else
                     wskey_status[$j]="2"
                 fi
-                echo -e "${full_name[$j]} 因$wsck_to_ck_msg导致转换JD_COOKIE失败"
+                echo -e "🧑‍🌾${full_name[$j]}"
+                echo -e "${emoji_MSG} 因$wsck_to_ck_msg，转换JD_COOKIE失败"
             fi
+            echo -e "$line"
         done
     fi
 }
@@ -1100,27 +1155,37 @@ Get_Sign_Zy143L(){
                 curl -s -k --connect-timeout 20 --retry 3 --noproxy "*" "$url" \
                     -H "User-Agent: $UA"
             )
-
-            #for params in functionId clientVersion build client partner oaid sdkVersion lang harmonyOs networkType uemps ext ef ep st sign sv; do
-            for params in functionId clientVersion client ef ep st sign sv; do
-                if [[ $api =~ \"$params\" ]]; then
-                    if [[ $params = ext || $params = ep ]]; then
-                        eval $params='$(urlencode $(echo $api | jq -r .$params))'
-                    else
-                        eval $params='$(echo $api | jq -r .$params)'
-                    fi
+            if [[ $api =~ \"code\" ]]; then
+                local code=$(echo $api | jq -r .code)
+                if [[ $code == 200 ]]; then
+                    wsck_to_ck_code="3" && wsck_to_ck_msg="User-Agent 错误"
+                else
+                    wsck_to_ck_code="3" && wsck_to_ck_msg="User-Agent 未知错误"
                 fi
-            done
-
-            if [[ ${clientVersion} && ${client} && ${ef} && ${ep} && ${st} && ${sign} && ${sv} ]]; then
-                body="body=%7B%22to%22%3A%22https%253a%252f%252fplogin.m.jd.com%252fjd-mlogin%252fstatic%252fhtml%252fappjmp_blank.html%22%7D&"
-                export sign="${body}clientVersion=${clientVersion}&client=${client}&ef=${ef}&ep=${ep}&st=${st}&sign=${sign}&sv=${sv}"
-                break
             else
-                Load_sign_cache
-                break
+                wsck_to_ck_code="" && wsck_to_ck_msg="User-Agent 正常"
+                #for params in functionId clientVersion build client partner oaid sdkVersion lang harmonyOs networkType uemps ext ef ep st sign sv; do
+                for params in functionId clientVersion client ef ep st sign sv; do
+                    if [[ $api =~ \"$params\" ]]; then
+                        if [[ $params = ext || $params = ep ]]; then
+                            eval $params='$(urlencode $(echo $api | jq -r .$params))'
+                        else
+                            eval $params='$(echo $api | jq -r .$params)'
+                        fi
+                    fi
+                done
+
+                if [[ ${clientVersion} && ${client} && ${ef} && ${ep} && ${st} && ${sign} && ${sv} ]]; then
+                    body="body=%7B%22to%22%3A%22https%253a%252f%252fplogin.m.jd.com%252fjd-mlogin%252fstatic%252fhtml%252fappjmp_blank.html%22%7D&"
+                    export sign="${body}clientVersion=${clientVersion}&client=${client}&ef=${ef}&ep=${ep}&st=${st}&sign=${sign}&sv=${sv}"
+                    break
+                else
+                    Load_sign_cache
+                    break
+                fi
             fi
         done
+        [[ $wsck_to_ck_code = 3 ]] && wskey_process $wsck_to_ck_code
     else
         wsck_to_ck_code="3" && wsck_to_ck_msg="未获取到 User-Agent" && wskey_process $wsck_to_ck_code
     fi
@@ -1156,7 +1221,7 @@ Dump_Sign_UA_json(){
 }
 
 # 获取 tokenKey 令牌
-Get_Token(){
+Get_tokenKey(){
     if [[ ${sign} && $UA ]]; then
         local url="https://api.m.jd.com/client.action?functionId=genToken&${sign}"
         local api=$(
@@ -1176,8 +1241,12 @@ Get_Token(){
             else
                 wsck_to_ck_code="6" && wsck_to_ck_msg="获取tokenKey令牌失败"
             fi
+        elif [[ $code == 1 ]]; then
+            wsck_to_ck_code="2" && wsck_to_ck_msg="签名(Sign)缺少参数" && wskey_process $wsck_to_ck_code
         elif [[ $code == 600 ]]; then
             wsck_to_ck_code="2" && wsck_to_ck_msg="签名(Sign)参数错误" && wskey_process $wsck_to_ck_code
+        else
+            wsck_to_ck_code="2" && wsck_to_ck_msg="签名(Sign)未知错误" && wskey_process $wsck_to_ck_code
         fi
     else
         wsck_to_ck_code="7" && wsck_to_ck_msg="签名(Sign)API访问失败"
@@ -1203,11 +1272,13 @@ Get_jdCookie(){
             elif [[ "$api" == *pt_key=\;* ]]; then
                 wsck_to_ck_code="1" && wsck_to_ck_msg="tokenKey令牌错误" && wskey_process $wsck_to_ck_code
             else
-                wsck_to_ck_code="4" && wsck_to_ck_msg="JD_WSCK(wskey)失效或错误"
+                wsck_to_ck_code="4" && wsck_to_ck_msg="JD_WSCK(wskey)失效"
             fi
         else
             wsck_to_ck_code="5" && wsck_to_ck_msg="JD_WSCK(wskey)转换API访问失败"
         fi
+    else
+        wsck_to_ck_code="1" && wsck_to_ck_msg="tokenKey令牌不存在" && wskey_process $wsck_to_ck_code
     fi
 }
 
@@ -1219,22 +1290,30 @@ wskey_process(){
     wsck_to_ck_msg=""
     case $1 in
         1)
-            Get_Token
+            Get_Sign_Zy143L
+            [[ ! ${sign} ]] && Get_Sign_jds
+            Get_tokenKey
             Get_jdCookie
             ;;
         2)
             Get_Sign_Zy143L
             [[ ! ${sign} ]] && Get_Sign_jds
-            Get_Token
-            Get_jdCookie
+            Get_tokenKey
             ;;
         3)
-            Get_UA && Get_Sign_Zy143L
+            Get_UA
+            Get_Sign_Zy143L
             [[ ! ${sign} ]] && Get_Sign_jds
-            Get_Token
+            ;;
+        4)
+            Get_tokenKey
             Get_jdCookie
             ;;
         *)
+            Get_UA
+            Get_Sign_Zy143L
+            [[ ! ${sign} ]] && Get_Sign_jds
+            Get_tokenKey
             Get_jdCookie
             ;;
     esac
@@ -1246,7 +1325,7 @@ wsck_to_ck(){
     local rand
     Load_UA_cache
     Load_sign_cache
-    [[ ${sign} && $UA ]] && wskey_process 1 || wskey_process 3
+    [[ ${sign} && $UA ]] && wskey_process 4 || wskey_process
 }
 
 ## 检测到失效账号，或还未转换为 JD_COOKIE 的 JD_WSCK(wskey)，则搜索或下载wskey转换脚本进行转换
@@ -1395,7 +1474,7 @@ content_notify(){
                 ck_process_chinese="添加"
                 log_one_to_one $i "$ck_process_chinese" "$ck_status_chinese" " ${full_name[$j]}"
             elif [[ ${final_status[$j]} != ${status_last[$j]} && ${status_last[$j]} = 1 ]]; then
-                ck_enabled[i]="${full_name[$j]}\n"
+                ck_valid_this_time[i]="${full_name[$j]}\n"
                 ck_status_chinese="生效"
                 ck_process_chinese="重启"
                 log_one_to_one $i "$ck_process_chinese" "$ck_status_chinese" " ${full_name[$j]}"
@@ -1408,7 +1487,7 @@ content_notify(){
             ck_status_chinese="失效"
             ck_process_chinese="禁用"
             if [[ ${final_status[$j]} != ${status_last[$j]} && ${status_last[$j]} = 0 ]]; then
-                ck_disabled[i]="${full_name[$j]}\n"
+                ck_invalid_this_time[i]="${full_name[$j]}\n"
                 log_one_to_one $i "$ck_process_chinese" "$ck_status_chinese" " ${full_name[$j]}"
             fi
         fi
@@ -1416,14 +1495,14 @@ content_notify(){
 
     # 整理通知内容
     sort_notify_content(){
-        echo -e "# 正在整理通知内容，请耐心等待 ...\n"
+        echo -e "${emoji_CHART} 正在整理通知内容，请耐心等待 ...\n"
         #gen_pt_pin_array
         #for i in ${!value[@]}; do
         #    local j=${pin[i]}
             # 获取上次 JD_COOKIE 的检测状态
         #    status_last[$j]="$(def_json_value "$dir_scripts/CK_WxPusherUid.json" status "pin=$j;")"
         #    [[ ! ${status_last[$j]} ]] && status_last[$j]=${status_ori[$j]}
-        #    final_status[$j]="$(def_json JD_COOKIE status "pin=$j;")"
+        #    final_status[$j]="$(def_json JD_COOKIE $i status)"
         #    if [[ ${Checksum_code[i]} = ${pin[i]} ]]; then
         #        [[ ${ck_status[$j]} != 2 ]] && [[ "${final_status[$j]}" == "${status_last[$j]}" ]] && [[ "${final_status[$j]}" == "${ck_status[$j]}" ]] && [[ ${final_status[$j]} = 0 ]] && continue
         #    fi
@@ -1439,20 +1518,20 @@ content_notify(){
         [[ $invalid_all ]] && notify_content_invalid_all="💫💫✨失效账号(共${#ck_invalid[@]}个)✨💫💫\n$invalid_all\n"
         content_1=$notify_content_invalid_all
 
-        ck_disabled_all="$(print_array "${ck_disabled[*]}")"
-        [[ $ck_disabled_all ]] && notify_content_ck_disabled_all="💫💫✨本次禁用账号(共${#ck_disabled[@]}个)✨💫💫\n$ck_disabled_all\n"
-        content_2=$notify_content_ck_disabled_all
+        ck_invalid_this_time_all="$(print_array "${ck_invalid_this_time[*]}")"
+        [[ $ck_invalid_this_time_all ]] && notify_content_ck_invalid_this_time_all="💫💫✨本次$process_notify_type_1账号(共${#ck_invalid_this_time[@]}个)✨💫💫\n$ck_invalid_this_time_all\n"
+        content_2=$notify_content_ck_invalid_this_time_all
 
         ck_added_all="$(print_array "${ck_added[*]}")"
         [[ $ck_added_all ]] && notify_content_ck_added_all="💫💫✨本次新增账号(共${#ck_added[@]} 个)✨💫💫\n$ck_added_all\n"
         content_3=$notify_content_ck_added_all
 
-        ck_enabled_all="$(print_array "${ck_enabled[*]}")"
-        [[ $ck_enabled_all ]] && notify_content_ck_enabled_all="💫💫✨本次启用账号(共${#ck_enabled[@]}个)✨💫💫\n$ck_enabled_all\n"
-        content_4=$notify_content_ck_enabled_all
+        ck_valid_this_time_all="$(print_array "${ck_valid_this_time[*]}")"
+        [[ $ck_valid_this_time_all ]] && notify_content_ck_valid_this_time_all="💫💫✨本次$process_notify_type_0账号(共${#ck_valid_this_time[@]}个)✨💫💫\n$ck_valid_this_time_all\n"
+        content_4=$notify_content_ck_valid_this_time_all
 
         validity_lt_1day_all="$(print_array "${ck_validity_lt_1day[*]}")"
-        [[ $validity_lt_1day_all ]] && notify_content_validity_lt_1day_all="💫💫✨有效期不足1天的账号(共${#ck_validity_lt_1day[@]}个)✨💫💫\n$validity_lt_1day_all\n"
+        [[ $validity_lt_1day_all ]] && notify_content_validity_lt_1day_all="💫💫✨账号有效期不足1天的账号(共${#ck_validity_lt_1day[@]}个)✨💫💫\n$validity_lt_1day_all\n"
         [[ $NOTIFY_VALID_TIME = 1 ]] && content_5=$notify_content_validity_lt_1day_all
 
         wskey_invalid_all="$(print_array "${wskey_invalid[*]}")"
@@ -1484,22 +1563,22 @@ content_notify(){
         [[ $CK_WxPusherUid_Json_All ]] && CK_WxPusherUid_Json_content="[\n$CK_WxPusherUid_Json_All]"
 
         # 账号有效性检测结果与上次检测结果一致的处理
-        valid_pin=($(def_envs_tool JD_COOKIE | grep '"status": 0' | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
-        invalid_pin=($(def_envs_tool JD_COOKIE | grep '"status": 1' | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
+        valid_pin=($(def_json_grep_match JD_COOKIE value '"status": 0'  | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
+        invalid_pin=($(def_json_grep_match JD_COOKIE value '"status": 1'  | perl -pe "{s|.*pt_pin=([^; ]+)(?=;?).*|\1|}"))
         if [[ ${#invalid_pin[@]} -gt 0 ]]; then
             if [[ $NOTIFY_SKIP_SAME_CONTENT = 1 ]] && [[ "${invalid_pin[@]}" == "${ori_invalid_pin[@]}" ]]; then
-                echo -e "# 失效账号与上次检测结果一致，本次不推送。\n"
+                echo -e "${emoji_MSG} 失效账号与上次检测结果一致，本次不推送。\n"
                 content_1=""
             fi
         fi
         if [[ ${#valid_pin[@]} -gt 0 ]]; then
             if [[ $NOTIFY_SKIP_SAME_CONTENT = 1 && "${valid_pin[@]}" == "${ori_valid_pin[@]}" ]]; then
-                echo -e "# 有效账号与上次检测结果一致，本次不推送。\n"
+                echo -e "${emoji_MSG} 有效账号与上次检测结果一致，本次不推送。\n"
                 content_10=""
             fi
         fi
 
-        display_content="$notify_content_invalid_all$notify_content_ck_disabled_all$notify_content_ck_added_all$notify_content_ck_enabled_all$notify_content_validity_lt_1day_all$notify_content_wskey_invalid_all$notify_content_ck_none_wskey_all$notify_content_ck_undocked_uid_all$notify_content_ck_no_uid_all$notify_content_valid_all$notify_content_validity"
+        display_content="$notify_content_invalid_all$notify_content_ck_invalid_this_time_all$notify_content_ck_added_all$notify_content_ck_valid_this_time_all$notify_content_validity_lt_1day_all$notify_content_wskey_invalid_all$notify_content_ck_none_wskey_all$notify_content_ck_undocked_uid_all$notify_content_ck_no_uid_all$notify_content_valid_all$notify_content_validity"
         notify_content="$content_1$content_2$content_3$content_4$content_5$content_6$content_7$content_8$content_9$content_10$content_11"
     }
 
@@ -1516,37 +1595,42 @@ content_notify(){
         if [[ $(echo $WP_APP_TOKEN_ONE|grep -Eo 'AT_(\w{32})') && $(echo $MainWP_UID|grep -Eo 'UID_\w{28}') ]] || [[ $QYWX_KEY ]] || [[ $QYWX_AM ]] || [[ $PUSH_PLUS_TOKEN ]] || [[ $PUSH_PLUS_TOKEN_hxtrip ]] || [[ $TG_BOT_TOKEN && $TG_USER_ID ]]; then
             if [[ $(echo $WP_APP_TOKEN_ONE|grep -Eo 'AT_(\w{32})') && $(echo $MainWP_UID|grep -Eo 'UID_\w{28}') ]]; then
                 uids="$(echo $MainWP_UID | perl -pe '{s|^|\"|; s|$|\"|}')"
-                WxPusher_notify_api $WP_APP_TOKEN_ONE "$uids" "$title" "$summary" "$content"
+                WxPusher_notify_api "$WP_APP_TOKEN_ONE" "$uids" "$title" "$summary" "$content"
+                echo -e ""
             fi
             if [[ $QYWX_KEY ]]; then
-                QYWX_Bot_notify_api "$title" "$summary"
+                QYWX_Bot_notify_api "$QYWX_KEY" "$title" "$summary"
+                echo -e ""
             fi
             if [[ $QYWX_AM ]]; then
-                QYWX_GetToken_api
-                if [[ $? = 0 ]]; then
-                    QYWX_notify_api "$title" "$summary" "$content"
-                fi
+                QYWX_notify_api "$QYWX_AM" "Shell版CK检查工具ckck2" "$title" "$summary" "$content"
+                echo -e ""
             fi
             if [[ $PUSH_PLUS_TOKEN ]]; then
-                pushplus_notify_api $PUSH_PLUS_TOKEN "$title" "$content"
+                PUSH_PLUS_USER=""
+                pushplus_notify_api "$PUSH_PLUS_TOKEN" "$PUSH_PLUS_USER" "$title" "$content"
+                echo -e ""
             fi
             if [[ $PUSH_PLUS_TOKEN_hxtrip ]]; then
-                hxtrip_pushplus_notify_api $PUSH_PLUS_TOKEN_hxtrip "$title" "$content"
+                PUSH_PLUS_USER_hxtrip=""
+                hxtrip_pushplus_notify_api "$PUSH_PLUS_TOKEN_hxtrip" "$PUSH_PLUS_USER_hxtrip" "$title" "$content"
+                echo -e ""
             fi
             if [[ $TG_BOT_TOKEN && $TG_USER_ID ]]; then
-                Telegram_notify_api $TG_BOT_TOKEN $TG_USER_ID "$title" "$content"
+                Telegram_notify_api "$TG_BOT_TOKEN" "$TG_USER_ID" "$title" "$summary"
+                echo -e ""
             fi
         else
-            echo -e "# 推送通知..." && notify "$title" "$content"
+            echo -e "${emoji_OUTBOX} 推送通知..." && notify "$title" "$content"
         fi
     fi
 }
 
 echo -e ""
-echo -e "# 当前版本：$Ver\n"
-echo -n "# 开始检查账号有效性"
+echo -e "${emoji_MSG} 当前版本：$Ver\n"
+echo -n "${emoji_MSG} 开始检查账号有效性"
 [[ $NOTIFY_VALID_TIME = 1 || $NOTIFY_VALID_TIME = 2 ]] && echo -e "，预测账号有效期谨供参考 ..." || echo -e " ..."
-declare -A remarks_ori remarks_id remarks_name remarks_new tmp_NickName_1 tmp_NickName_2 wskey_value wskey_id wskey_remarks wskey_status wskey_status_ori wskey_status_last tmp_Uid_1 tmp_Uid_2 Uid NickName full_name status_ori ck_status status_last final_status tmp_up_timestamp_1 tmp_up_timestamp_2 up_timestamp last_validity_day validity_day validity_less_then_day
+declare -A remarks_ori remarks_id remarks_name remarks_new tmp_NickName_1 tmp_NickName_2 wskey_value wskey_id wskey_remarks wskey_status wskey_status_ori wskey_status_last tmp_Uid_1 tmp_Uid_2 Uid NickName full_name status_ori ck_status status_last final_status tmp_up_timestamp_env up_timestamp last_validity_day validity_day validity_less_then_day
 pre_work
 verify_ck
 echo ""

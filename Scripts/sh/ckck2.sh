@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ## 版本号
-Ver="Build 20220320-001-Alpha"
+Ver="Build 20220323-001-Alpha"
 
 ## 导入通用变量与函数
 dir_shell=/ql/shell
@@ -82,6 +82,7 @@ def_sub_value(){
     def_json_total $1 $2 | awk 'NR=='$line''
 }
 
+# 时间戳转时间长度
 UTC(){
     local i=$1
     local d h m s ms
@@ -93,7 +94,7 @@ UTC(){
         ms=$[i-d*86400000-h*3600000-m*60000-s*1000]
         [[ $d -gt 0 ]] && d="$d天" || d=""
         [[ $h -gt 0 ]] && h="$h小时" || h=""
-        [[ $m -gt 0 ]] && m="$m分钟" || m=""
+        [[ $m -gt 0 ]] && m="$m分" || m=""
         [[ $s -gt 0 ]] && s="$s秒" || s=""
         [[ $ms -gt 0 ]] && ms="$ms毫秒" || ms=""
         if [[ $d || $h || $m || $s || $ms ]]; then
@@ -102,6 +103,15 @@ UTC(){
             echo "临期"
         fi
     fi
+}
+
+# 区间抽取随机数
+random(){
+	local min=$1
+	local max=$2
+	local RAND=`od -t uI -N 4 /dev/urandom | awk '{print $2}'`
+	RAND=$[RAND%$[max-min+1]+min]
+	echo $RAND
 }
 
 ## 生成 json 值数组
@@ -626,11 +636,11 @@ Get_Full_Name(){
     [[ ${remarks_ori[$j]} = null ]] && remarks_ori[$j]=""
 
     # JD_COOKIE 相关值
-    value[i]="$(echo ${value[i]} | grep -Eo 'pt_key=[^; ]+');pt_pin=$j;"
+    value[i]="$(echo ${value[i]} | grep -Eo 'pt_key=[^; ]+' | head -1);pt_pin=$j;"
 
     # wskey 相关值
     wskey_value[$j]="$(def_json_grep_match JD_WSCK value "pin=$j;" | head -1)"
-    [[ ${wskey_value[$j]} =~ "wskey=" ]] && wskey_value[$j]="pin=$j;$(echo ${wskey_value[$j]} | grep -Eo 'wskey=[^; ]+');"
+    [[ ${wskey_value[$j]} =~ "wskey=" ]] && wskey_value[$j]="pin=$j;$(echo ${wskey_value[$j]} | grep -Eo 'wskey=[^; ]+' | head -1);"
     wskey_id[$j]="$(def_json_grep_match JD_WSCK $tmp_id "pin=$j;" | head -1)"
     wskey_remarks[$j]="$(def_json_grep_match JD_WSCK remarks "pin=$j;" | head -1)"
     local wskey_pin_sub="$(def_sub JD_WSCK value "pin=$j;")"
@@ -674,13 +684,13 @@ Get_Full_Name(){
             remarks_id[$j]="$remarks_ori_id($UserName)"
         fi
     fi
-    remarks_new[$j]="${remarks_id[$j]}"
+    remarks_new[$j]="$(echo ${remarks_ori[$j]} | perl -pe '{s|^((?!@@(([\d]{13}\|UID_[\w]{28}))).)*|'${remarks_id[$j]}'|}')"
 
     # 有效期相关
-    tmp_up_timestamp_env[$j]="$(echo ${remarks_ori[$j]} | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}')"
+    tmp_up_timestamp_env[$j]="$(echo ${remarks_ori[$j]} | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}' | head -1)"
 
     # WxPusherUid 相关值
-    tmp_Uid_1[$j]="$(echo ${remarks_ori[$j]} | grep -Eo 'UID_\w{28}')"
+    tmp_Uid_1[$j]="$(echo ${remarks_ori[$j]} | grep -Eo 'UID_\w{28}' | head -1)"
     tmp_Uid_2[$j]="$(def_json_value "$dir_scripts/CK_WxPusherUid.json" Uid "pin=$j;")"
     if [[ ${tmp_Uid_1[$j]} ]]; then
         Uid[$j]="${tmp_Uid_1[$j]}"
@@ -830,7 +840,7 @@ verify_ck(){
         local j=${pin[i]}
         local tmp_up_timestamp_1 tmp_up_timestamp_2 total_validity_period timestamp_ms past_period remain_validity_period last_validity_period valid_time
         if [[ ${ck_status[$j]} = 0 ]]; then
-            tmp_up_timestamp_1="$(echo $(def_json JD_COOKIE $i remarks) | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}')"
+            tmp_up_timestamp_1="$(echo $(def_json JD_COOKIE $i remarks) | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}' | head -1)"
             tmp_up_timestamp_2="$[$(date -d "$(def_json JD_COOKIE $i $tmp_update_timestamp)" +%s%N)/1000000]"
             if [[ $tmp_up_timestamp_1 ]]; then
                 up_timestamp[$j]="$tmp_up_timestamp_1"
@@ -892,21 +902,30 @@ verify_ck(){
         local i=$1
         local notify=$2
         local j=${pin[i]}
-        local timestamp_ms ori_timestamp_ms NickName_Json remarks_id_Json
-        timestamp_ms="$(echo ${remarks_ori[$j]} | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}' | head -1)"
-        [[ $timestamp_ms ]] && [[ ! ${tmp_Uid_1[$j]} ]] && [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]] && ck_undocked_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && echo -e "${emoji_SOS} WxPusher UID未对接完成"
-        if [[ ${Uid[$j]} ]]; then
-            ori_timestamp_ms="$timestamp_ms"
-            [[ ! $timestamp_ms ]] && timestamp_ms="$[$(date +%s%N)/1000000]"
-            remarks_new[$j]="${remarks_id[$j]}@@$timestamp_ms@@${Uid[$j]}"
-            if [[ ! ${tmp_Uid_1[$j]} ]] || [[ ! $ori_timestamp_ms ]]; then
-                if [[ $SCANF_WXPusher_Remarks = 1 ]]; then
-                    ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" "补全JD_COOKIE备注时间戳"
-                    echo -e ""
+        local timestamp_ms NickName_Json remarks_id_Json msg
+        timestamp_ms="$(echo $(def_json JD_COOKIE $i remarks) | grep -Eo '@@([0-9]{13})' | grep -Eo '[0-9]{13}' | head -1)"
+        if [[ $timestamp_ms ]] && [[ ! ${Uid[$j]} ]]; then
+            if [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]]; then
+                ck_undocked_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && echo -e "${emoji_SOS} WxPusher UID未对接完成"
+            fi
+        elif [[ ! ${Uid[$j]} ]]; then
+            if [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]]; then
+                ck_no_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && echo -e "${emoji_NONE} 未录入WxPusher UID"
+            fi
+        elif [[ ${Uid[$j]} ]]; then
+            if [[ ! $timestamp_ms ]] || [[ ! ${tmp_Uid_1[$j]} ]]; then
+                if [[ ! $timestamp_ms ]]; then
+                    timestamp_ms="$[$(date -d "$(def_json JD_COOKIE $i $tmp_update_timestamp)" +%s%N)/1000000]"
+                    if [[ ! ${tmp_Uid_1[$j]} ]]; then
+                        msg="将WxPusher UID同步至JD_COOKIE备注"
+                    else
+                        msg="补全JD_COOKIE备注时间戳"
+                    fi
                 fi
+                remarks_new[$j]="${remarks_id[$j]}@@$timestamp_ms@@${Uid[$j]}"
+                ql_update_env_api JD_COOKIE "${value[i]}" $(eval echo \${$tmp_id[i]}) "${remarks_new[$j]}" "${msg}" && echo -e ""
             fi
         fi
-        [[ ! ${Uid[$j]} ]] && ck_no_uid[i]="${full_name[$j]}\n" && [[ $notify = on ]] && [[ $CK_WxPusherUid = 1 || $CK_WxPusherUid = 2 ]] && echo -e "${emoji_NONE} 未录入WxPusher UID"
         NickName_Json="$(spc_sym_tr ${NickName[$j]})"
         remarks_id_Json="$(spc_sym_tr ${remarks_id[$j]})"
         CK_WxPusherUid_Json[i]="{\n\t\"序号\": \"${sn[i]}\",\n\t\"NickName\": \"$NickName_Json\",\n\t\"JD_COOKIE\": \"${value[i]}\",\n\t\"status\": ${ck_status[$j]},\n\t\"validity_day\": ${validity_day[$j]},\n\t\"remarks\": \"$remarks_id_Json\",\n\t\"JD_WSCK\": \"${wskey_value[$j]}\",\n\t\"wskey_status\": ${wskey_status[$j]},\n\t\"pin\": \"$j\",\n\t\"pt_pin\": \"${pt_pin[i]}\",\n\t\"Uid\": \"${Uid[$j]}\"\n},\n"
@@ -1044,7 +1063,7 @@ verify_ck(){
             pt_pin[i]=$(urldecode "${pin[i]}")
             value[i]="pt_key=;pt_pin=${pin[i]}"
             j=${pin[i]}
-            [[ $other_wskey =~ "wskey=" ]] && other_wskey="pin=$j;$(echo $other_wskey | grep -Eo 'wskey=[^; ]+');"
+            [[ $other_wskey =~ "wskey=" ]] && other_wskey="pin=$j;$(echo $other_wskey | grep -Eo 'wskey=[^; ]+' | head -1);"
             Get_Full_Name $i
             wsck_to_ck $other_wskey
             if [[ $wsck_to_ck_code = 0 ]]; then
@@ -1100,7 +1119,7 @@ Load_sign_cache(){
 Get_UA(){
     # 获取 User-Agent
     wskey_sign_api=("http://43.135.90.23/" "https://shizuku.ml/" "https://cf.shizuku.ml/")
-    ran_sub="$(seq ${!wskey_sign_api[@]} | sort -R)"
+    ran_sub="$(random 0 $[${#wskey_sign_api[*]}-1])"
     for sub in $ran_sub; do
         host=${wskey_sign_api[sub]}
         local url="${host}check_api"
@@ -1147,7 +1166,7 @@ Get_Sign_Zy143L(){
     if [[ $UA ]]; then
         local functionId clientVersion build client partner oaid sdkVersion lang harmonyOs networkType uemps ext ef ep st sv
         wskey_sign_api=("http://43.135.90.23/" "https://shizuku.ml/" "https://cf.shizuku.ml/")
-        ran_sub="$(seq ${!wskey_sign_api[@]} | sort -R)"
+        ran_sub="$(random 0 $[${#wskey_sign_api[*]}-1])"
         for sub in $ran_sub; do
             host=${wskey_sign_api[sub]}
             local url="${host}genToken"
